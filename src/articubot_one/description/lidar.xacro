@@ -1,5 +1,7 @@
 <?xml version="1.0"?>
-<robot xmlns:xacro="http://www.ros.org/wiki/xacro" >
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:arg name="namespace" default="" />
 
     <joint name="laser_joint" type="fixed">
         <parent link="chassis"/>
@@ -31,8 +33,6 @@
         </xacro:inertial_cylinder>
     </link>
 
-
-
     <gazebo reference="laser_frame">
         <material>Gazebo/Black</material>
 
@@ -55,7 +55,8 @@
             </ray>
             <plugin name="laser_controller" filename="libgazebo_ros_ray_sensor.so">
                 <ros>
-                    <argument>~/out:=scan</argument>
+                    <namespace>$(arg namespace)</namespace>
+                    <remapping>~/out:=scan</remapping>
                 </ros>
                 <output_type>sensor_msgs/LaserScan</output_type>
                 <frame_name>laser_frame</frame_name>
