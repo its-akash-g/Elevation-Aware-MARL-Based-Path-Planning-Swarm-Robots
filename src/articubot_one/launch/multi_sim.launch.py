@@ -10,16 +10,20 @@ def generate_launch_description():
     pkg_articubot = get_package_share_directory('articubot_one')
     pkg_gazebo_ros = get_package_share_directory('gazebo_ros')
 
+    world_path = os.path.join(pkg_articubot, 'worlds', 'elevation.world')
+
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_gazebo_ros, 'launch', 'gazebo.launch.py')
-        )
+        ),
+        launch_arguments={'world': world_path}.items()
     )
 
+    # Spawn side-by-side along Y axis so all rovers face the ramp directly ahead
     rovers = [
-        {'name': 'rover_1', 'x': 0.0, 'y': 0.0, 'z': 0.1},
-        {'name': 'rover_2', 'x': 2.0, 'y': 0.0, 'z': 0.1},
-        {'name': 'rover_3', 'x': 4.0, 'y': 0.0, 'z': 0.1},
+        {'name': 'rover_1', 'x': 0.0, 'y': 0.0, 'z': 3.1},
+        {'name': 'rover_2', 'x': 0.0, 'y': 1.5, 'z': 3.1},
+        {'name': 'rover_3', 'x': 0.0, 'y': -1.5, 'z': 3.1},
     ]
 
     nodes = [gazebo]

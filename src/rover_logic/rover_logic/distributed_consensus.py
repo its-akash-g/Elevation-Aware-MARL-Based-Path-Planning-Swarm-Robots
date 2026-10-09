@@ -1,65 +1,111 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
-import random
+from rclpy.action import ActionClient
+from nav2_msgs.action import NavigateToPose
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseStamped
+import math
 
 class DistributedConsensusNode(Node):
     def __init__(self):
         super().__init__('distributed_consensus')
         
-        # Define namespace isolated rovers
-        self.namespaces = ['/rover_1', '/rover_2', '/rover_3']
-        self.publishers_ = {}
+        self.namespaces = ['rover_1', 'rover_2', 'rover_3']
         
-        # Create a publisher for each rover's differential drive controller topic
+        # Swarm Global Target (Change this to test different shortest paths)
+        self.global_target_x = 5.0
+        self.global_target_y = 5.0
+        
+        # MARL State Variables
+        self.energy_levels = {'rover_1': 100.0, 'rover_2': 100.0, 'rover_3': 100.0}
+        self.current_positions = {'rover_1': (0.0, 0.0), 'rover_2': (0.0, 0.0), 'rover_3': (0.0, 0.0)}
+        
+        # DCS Weights: w1 (Distance/Shortest Path), w2 (Energy Preservation)
+        self.w1 = 1.0 
+        self.w2 = 5.0
+        
+        self.nav_clients = {}
+        self.odom_subs = {}
+        
         for ns in self.namespaces:
-            topic = f"{ns}/diff_cont/cmd_vel_unstamped"
-            self.publishers_[ns] = self.create_publisher(Twist, topic, 10)
+            # Action clients for Nav2 Obstacle Avoidance
+            self.nav_clients[ns] = ActionClient(self, NavigateToPose, f'/{ns}/navigate_to_pose')
+            # Subscribers for real-time position tracking
+            self.odom_subs[ns] = self.create_subscription(
+                Odometry, f'/{ns}/odom', 
+                lambda msg, rover_id=ns: self.odom_callback(msg, rover_id), 10)
             
-        # 2 Hz update rate for visible consensus shifting during your presentation
-        self.timer = self.create_timer(0.5, self.control_loop)
-        self.get_logger().info("Elevation-Aware Dynamic Consensus & Leader Election Initialized.")
+        # Control loop evaluates MARL consensus every 4 seconds
+        self.timer = self.create_timer(4.0, self.marl_consensus_loop)
+        self.get_logger().info("MARL Distributed Consensus Node Initialized.")
 
-    def control_loop(self):
-        # Simulate real-time elevation-aware energy costs (C_i) based on terrain slope
-        costs = {
-            'ROVER_1': round(random.uniform(0.35, 0.55), 2),
-            'ROVER_2': round(random.uniform(0.30, 0.60), 2),
-            'ROVER_3': round(random.uniform(0.40, 0.65), 2)
-        }
+    def odom_callback(self, msg, rover_id):
+        # Update internal state with actual Gazebo coordinates
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        self.current_positions[rover_id] = (x, y)
+
+    def calculate_distance(self, x1, y1, x2, y2):
+        return math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+
+    def marl_consensus_loop(self):
+        costs = {}
         
-        # Elect the leader dynamically with the minimum elevation energy cost (argmin C_i)
+        # 1. MARL Algorithm: Calculate Cost Function C_i for each rover
+        for ns in self.namespaces:
+            # Shortest Path Component (Distance to goal)
+            curr_x, curr_y = self.current_positions[ns]
+            dist_to_goal = self.calculate_distance(curr_x, curr_y, self.global_target_x, self.global_target_y)
+            
+            # Energy Component (Inverse energy - lower battery means higher cost)
+            energy_factor = 100.0 / max(1.0, self.energy_levels[ns])
+            
+            # Final DCS Cost Equation
+            costs[ns] = (self.w1 * dist_to_goal) + (self.w2 * energy_factor)
+            
+        # 2. Leader Election: argmin C_i
         leader = min(costs, key=costs.get)
-        min_cost = costs[leader]
+        optimal_cost = costs[leader]
         
-        self.get_logger().info(f"Consensus Update -> Leader: {leader} | Optimal Cost C_i: {min_cost} | All Costs: {costs}")
+        # Simulate active energy drain for the moving leader
+        self.energy_levels[leader] = max(0.0, self.energy_levels[leader] - 2.5)
+        
+        # 3. Terminal Output for Verification
+        self.get_logger().info(
+            f"\n[MARL CONSENSUS ALGORITHM]"
+            f"\n -> Target Goal : ({self.global_target_x}, {self.global_target_y})"
+            f"\n -> Elected Ldr : {leader.upper()}"
+            f"\n -> Optimal C_i : {optimal_cost:.2f}"
+            f"\n -> Dist to Goal: {dist_to_goal:.2f}m"
+            f"\n -> Energy Dist : R1={self.energy_levels['rover_1']:.1f}% | "
+            f"R2={self.energy_levels['rover_2']:.1f}% | "
+            f"R3={self.energy_levels['rover_3']:.1f}%"
+            f"\n--------------------------------------------------"
+        )
+        
+        # 4. Dispatch the Leader via Nav2 for Shortest Path Execution
+        self.send_nav2_goal(leader, self.global_target_x, self.global_target_y)
 
-        # Coordinate movement: Leader drives path-finding, followers maintain consensus formation
-        for ns, pub in self.publishers_.items():
-            twist = Twist()
-            rover_name = ns.replace('/', '').upper()
+    def send_nav2_goal(self, rover_id, x, y):
+        client = self.nav_clients[rover_id]
+        if not client.wait_for_server(timeout_sec=0.5):
+            return
             
-            if rover_name == leader:
-                # Leader takes the optimal forward trajectory
-                twist.linear.x = 0.25
-                twist.angular.z = 0.0
-            else:
-                # Follower rovers coordinate and adjust speed to maintain formation
-                twist.linear.x = 0.18
-                twist.angular.z = 0.04
-                
-            pub.publish(twist)
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = 'map'
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.position.x = float(x)
+        goal.pose.position.y = float(y)
+        goal.pose.orientation.w = 1.0
+        
+        client.send_goal_async(goal)
 
 def main(args=None):
     rclpy.init(args=args)
     node = DistributedConsensusNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
